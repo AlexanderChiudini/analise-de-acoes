@@ -5,6 +5,7 @@ import os
 import sqlite3
 import sys
 import unittest
+import urllib.error
 from pathlib import Path
 from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -77,6 +78,41 @@ class RemoteTests(unittest.TestCase):
         with patch.dict(os.environ, {'TURSO_DATABASE_URL':''}):
             with self.assertRaises(ConfigurationError):
                 server.get_asset('WEGE3')
+
+    def reply(self, batch):
+        return io.BytesIO(json.dumps({'results':[{'type':'ok','response':{'type':'batch','result':batch}}]}).encode())
+
+    def test_sql_permission_error_is_actionable_and_redacted(self):
+        batch={'step_results':[None,None,None,None], 'step_errors':[{'code':'SQLITE_AUTH','message':'not authorized SECRET_TOKEN'},None,None,None]}
+        with patch.object(remote_sqlite.urllib.request,'urlopen',return_value=self.reply(batch)):
+            with self.assertRaises(remote_sqlite.RemoteDatabaseError) as caught:
+                server.get_asset('WEGE3')
+        self.assertEqual(caught.exception.code,'SQLITE_AUTH')
+        self.assertEqual(caught.exception.stage,'0:CREATE')
+        self.assertIn('leitura e escrita',str(caught.exception))
+        self.assertNotIn('SECRET_TOKEN',str(caught.exception))
+
+    def test_http_auth_error_is_not_generic(self):
+        error=urllib.error.HTTPError('https://example.turso.io',401,'Unauthorized',{},None)
+        with patch.object(remote_sqlite.urllib.request,'urlopen',side_effect=error):
+            with self.assertRaises(remote_sqlite.RemoteDatabaseError) as caught:
+                server.get_asset('WEGE3')
+        self.assertEqual(caught.exception.code,'TURSO_HTTP_401')
+
+    def test_malformed_reply_is_not_uncaught_python_error(self):
+        for body in (b'<html>Not an API</html>',b'{}',b'{"results":[]}'):
+            with patch.object(remote_sqlite.urllib.request,'urlopen',return_value=io.BytesIO(body)):
+                with self.assertRaises(remote_sqlite.RemoteDatabaseError) as caught:
+                    server.get_asset('WEGE3')
+                self.assertEqual(caught.exception.code,'TURSO_RESPONSE_INVALID')
+
+    def test_sparse_slots_and_nullable_empty_rows(self):
+        result={'cols':None,'rows':None}
+        self.assertEqual(remote_sqlite.decode_rows(result),[])
+        self.assertEqual(remote_sqlite.step_slots({'0':result},2),[result,None])
+        for invalid in (None,{'5':result},[result]):
+            with self.assertRaises(remote_sqlite.RemoteDatabaseError):
+                remote_sqlite.step_slots(invalid,2)
 
 if __name__ == '__main__':
     unittest.main()

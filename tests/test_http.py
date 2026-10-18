@@ -108,5 +108,16 @@ class HTTPTests(unittest.TestCase):
                 self.request(path)
             self.assertEqual(error.exception.code,400)
 
+    def test_database_error_response_preserves_safe_diagnostic(self):
+        error=server.remote_sqlite.database_error({'code':'SQLITE_AUTH','message':'not authorized secret-value'},'0:CREATE')
+        with patch.object(server,'get_asset',side_effect=error):
+            with self.assertRaises(urllib.error.HTTPError) as caught:
+                self.request('/api/assets/WEGE3')
+            self.assertEqual(caught.exception.code,502)
+            body=json.loads(caught.exception.read())
+            self.assertEqual(body['code'],'SQLITE_AUTH')
+            self.assertEqual(body['stage'],'0:CREATE')
+            self.assertNotIn('secret-value',json.dumps(body))
+
 if __name__ == '__main__':
     unittest.main()

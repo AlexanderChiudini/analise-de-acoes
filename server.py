@@ -112,12 +112,20 @@ class Handler(BaseHTTPRequestHandler):
             self.route_get()
         except ConfigurationError as e:
             self.send(503, {'error': str(e)})
+        except remote_sqlite.RemoteDatabaseError as e:
+            self.send(502, {'error': str(e), 'code': e.code, 'stage': getattr(e, 'stage', None)})
         except ValueError as e:
             self.send(400, {'error': str(e)})
         except Exception:
-            self.send(500, {'error': 'Falha interna. Consulte o terminal.'})
-            import traceback
-            traceback.print_exc()
+            self.internal_error()
+
+    def internal_error(self):
+        import secrets
+        import traceback
+        error_id = secrets.token_hex(6)
+        print(f'internal_error error_id={error_id}', flush=True)
+        traceback.print_exc()
+        self.send(500, {'error': 'Falha interna. Consulte os logs da Vercel (ou o terminal local) com o identificador informado.', 'code': 'INTERNAL_ERROR', 'error_id': error_id})
 
     def route_get(self):
         path = request_path(self.path)
@@ -201,12 +209,12 @@ class Handler(BaseHTTPRequestHandler):
             self.send(200, save_asset(asset))
         except ConfigurationError as e:
             self.send(503, {'error': str(e)})
+        except remote_sqlite.RemoteDatabaseError as e:
+            self.send(502, {'error': str(e), 'code': e.code, 'stage': getattr(e, 'stage', None)})
         except (ValueError, TypeError, KeyError) as e:
             self.send(400, {'error': str(e)})
         except Exception:
-            import traceback
-            traceback.print_exc()
-            self.send(500, {'error': 'Falha interna. Consulte o terminal.'})
+            self.internal_error()
 
 if __name__ == '__main__':
     init()

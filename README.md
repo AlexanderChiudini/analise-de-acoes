@@ -46,6 +46,18 @@ Não coloque segredos no Git nem no JavaScript da interface. `.env.example` most
 
 O aplicativo ainda não possui contas de usuário: visitantes com acesso ao site compartilham o mesmo banco e podem ler e editar as análises. Use o controle de acesso da hospedagem se o uso for privado. O token de sessão protege requisições; não é um login.
 
+### Diagnosticar erros no banco remoto
+
+Se uma rota de ação falhar, consulte `/api/health`. Falhas de Turso agora retornam HTTP 502 com `code`, mensagem orientativa e, para erros SQL, `stage` (índice da etapa e operação, por exemplo `0:CREATE`). A resposta não contém tokens, consultas SQL nem dados retornados pelo provedor. Os logs registram o mesmo código e etapa.
+
+- `SQLITE_AUTH` ou `SQLITE_READONLY`: token sem as permissões necessárias. O app cria tabelas e índice automaticamente e precisa de leitura e escrita.
+- `TURSO_HTTP_401` ou `TURSO_HTTP_403`: autenticação ou acesso negado. Confira o token do **banco**, não um token administrativo de organização.
+- `TURSO_HTTP_404`: confira a URL do banco, sem sufixos como `/v2/pipeline`.
+- `TURSO_RESPONSE_INVALID`: resposta não JSON ou incompatível com o protocolo esperado.
+- `SQLITE_ERROR` e outros códigos SQL: consulte a etapa; não significam necessariamente erro de autenticação.
+
+A antiga mensagem “Falha na operação SQLite remota; a transação foi revertida” descartava o erro real do provedor e era imprecisa para leituras. Para erros internos inesperados, a API agora retorna `error_id`; procure o mesmo identificador nos logs da Vercel e consulte o traceback associado. Não envie credenciais ao compartilhar o diagnóstico.
+
 ## Funcionalidades
 
 - Consulta por ticker, lista de ações analisadas e atualização sob demanda.
