@@ -9,7 +9,7 @@ import sys
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from models import DEFAULTS, FIELDS, validate, calculate
@@ -63,6 +63,20 @@ def ticker_value(value):
         raise ValueError('Ticker inválido. Exemplo: WEGE3 ou TAEE11.')
     return value
 
+def request_path(raw_path):
+    parsed = urlparse(raw_path)
+    if parsed.path in ('/api/index', '/api/index.py', '/api'):
+        # Rewrites podem substituir self.path pelo destino da função.
+        # O caminho público é transportado explicitamente pela configuração Vercel.
+        routes = parse_qs(parsed.query, keep_blank_values=True).get('__route', ['/'])
+        if len(routes) != 1:
+            raise ValueError('Caminho de requisição ambíguo.')
+        route = routes[0]
+        if not route.startswith('/') or route.startswith('//') or any(c in route for c in ('?', '#', '\\', '\x00', '\r', '\n')):
+            raise ValueError('Caminho de requisição inválido.')
+        return route
+    return parsed.path
+
 def get_asset(ticker):
     rows = run_sql([('SELECT payload FROM assets WHERE ticker=?', (ticker,))])[0]
     row = rows[0] if rows else None
@@ -106,7 +120,7 @@ class Handler(BaseHTTPRequestHandler):
             traceback.print_exc()
 
     def route_get(self):
-        path = urlparse(self.path).path
+        path = request_path(self.path)
         if path == '/api/session':
             return self.send(200, {'token': session_token(), 'storage': 'turso' if remote_sqlite.configured() else 'local'})
         if path == '/api/assets':
@@ -156,7 +170,7 @@ class Handler(BaseHTTPRequestHandler):
             if size < 0 or size > 100000:
                 return self.send(413, {'error': 'Conteúdo excedeu o limite.'})
             body = json.loads(self.rfile.read(size) or '{}')
-            match = re.fullmatch(r'/api/assets/([^/]+)/(save|refresh|simulate)', urlparse(self.path).path)
+            match = re.fullmatch(r'/api/assets/([^/]+)/(save|refresh|simulate)', request_path(self.path))
             if not match:
                 return self.send(404, {'error': 'Rota não encontrada.'})
             ticker, action = ticker_value(match[1]), match[2]

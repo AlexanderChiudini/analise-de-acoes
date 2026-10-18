@@ -16,6 +16,8 @@ No modo local, o banco é criado em `data/equity.sqlite3`. Cada atualização ou
 
 O projeto inclui `api/index.py` e `vercel.json` para encaminhar as páginas e a API à mesma função Python. `.vercelignore` exclui o runtime Windows, banco local e fixtures do pacote publicado.
 
+O rewrite transporta o caminho público no parâmetro interno `__route`. Isso evita **Rota não encontrada** quando a Vercel entrega `/api/index` ao handler em vez da URL original. O mesmo resolvedor é usado para páginas, CSS, JavaScript e operações GET/POST da API. Publique `vercel.json` e `server.py` juntos, com a raiz deste projeto como **Root Directory** na Vercel; depois faça um novo deploy.
+
 O erro **Host inválido** ocorria porque o servidor aceitava apenas `localhost` e `127.0.0.1`. Agora aceita também o domínio informado na conversa, os domínios exatos fornecidos pela Vercel em `VERCEL_URL`, `VERCEL_PROJECT_PRODUCTION_URL` e `VERCEL_BRANCH_URL`, e domínios adicionais em `ALLOWED_HOSTS`. Não é aceita qualquer URL `*.vercel.app` indiscriminadamente.
 
 **A Vercel não oferece persistência de arquivos SQLite locais.** Usar `/tmp` faria as análises desaparecerem ou divergirem entre instâncias. Por isso, esta versão usa Turso (SQLite/libSQL via HTTPS) na Vercel e mantém arquivo SQLite no computador. [Limitação documentada pela Vercel](https://vercel.com/kb/guide/is-sqlite-supported-in-vercel).

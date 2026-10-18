@@ -7,6 +7,7 @@ import threading
 import unittest
 import urllib.error
 import urllib.request
+from urllib.parse import quote
 from pathlib import Path
 from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -83,6 +84,29 @@ class HTTPTests(unittest.TestCase):
         with self.assertRaises(urllib.error.HTTPError) as error:
             self.request('/',host='untrusted.vercel.app')
         self.assertEqual(error.exception.code,403)
+
+    def test_vercel_rewritten_paths(self):
+        def rewritten(path):
+            return '/api/index?__route='+quote(path,safe='')
+        self.assertIn(b'equitylab',self.request(rewritten('/')))
+        self.assertIn(b'equitylab',self.request('/api/index'))
+        self.assertIn(b'const qualityItems',self.request(rewritten('/app.js')))
+        self.assertIn(b':root',self.request(rewritten('/style.css')))
+        session=json.loads(self.request(rewritten('/api/session')))
+        self.assertIn('token',session)
+        self.assertEqual(json.loads(self.request(rewritten('/api/health')))['status'],'ok')
+        self.assertIsInstance(json.loads(self.request(rewritten('/api/assets'))),list)
+        result=json.loads(self.request(rewritten('/api/assets/TEST3/simulate'),{'price':10}))
+        self.assertIn('analysis',result)
+        with self.assertRaises(urllib.error.HTTPError) as error:
+            self.request(rewritten('/unknown-route'))
+        self.assertEqual(error.exception.code,404)
+
+    def test_rewritten_path_validation(self):
+        for path in ('/api/index?__route=//evil.com', '/api/index?__route=/&__route=/api/session', '/api/index?__route=relative'):
+            with self.assertRaises(urllib.error.HTTPError) as error:
+                self.request(path)
+            self.assertEqual(error.exception.code,400)
 
 if __name__ == '__main__':
     unittest.main()
