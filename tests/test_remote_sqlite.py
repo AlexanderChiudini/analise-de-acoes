@@ -16,6 +16,7 @@ from hosting import ConfigurationError
 class RemoteTests(unittest.TestCase):
     def setUp(self):
         self.db = sqlite3.connect(':memory:',isolation_level=None)
+        self.operations = []
         self.env = patch.dict(os.environ, {'VERCEL':'1','TURSO_DATABASE_URL':'libsql://example.turso.io','TURSO_AUTH_TOKEN':'test-token','SESSION_SECRET':'a'*32})
         self.env.start()
         self.transport = patch.object(remote_sqlite.urllib.request,'urlopen',side_effect=self.request)
@@ -32,6 +33,7 @@ class RemoteTests(unittest.TestCase):
         payload = json.loads(request.data)
         self.assertEqual(payload['requests'][-1],{'type':'close'})
         steps = payload['requests'][0]['batch']['steps']
+        self.operations.append([step['stmt']['sql'] for step in steps])
         results, errors = [], []
         def condition(cond):
             if cond['type']=='ok':
@@ -52,9 +54,9 @@ class RemoteTests(unittest.TestCase):
                 rows=[[remote_sqlite.argument(v) for v in row] for row in cursor.fetchall()]
                 results.append({'cols':cols,'rows':rows})
                 errors.append(None)
-            except sqlite3.Error:
+            except sqlite3.Error as error:
                 results.append(None)
-                errors.append({'message':'test SQLite failure'})
+                errors.append({'code':'SQLITE_ERROR','message':str(error)})
         return io.BytesIO(json.dumps({'results':[{'type':'ok','response':{'type':'batch','result':{'step_results':results,'step_errors':errors}}},{'type':'ok','response':{'type':'close'}}]}).encode())
 
     def test_save_read_and_history(self):
@@ -83,12 +85,12 @@ class RemoteTests(unittest.TestCase):
         return io.BytesIO(json.dumps({'results':[{'type':'ok','response':{'type':'batch','result':batch}}]}).encode())
 
     def test_sql_permission_error_is_actionable_and_redacted(self):
-        batch={'step_results':[None,None,None,None], 'step_errors':[{'code':'SQLITE_AUTH','message':'not authorized SECRET_TOKEN'},None,None,None]}
+        batch={'step_results':[None], 'step_errors':[{'code':'SQLITE_AUTH','message':'not authorized SECRET_TOKEN'}]}
         with patch.object(remote_sqlite.urllib.request,'urlopen',return_value=self.reply(batch)):
             with self.assertRaises(remote_sqlite.RemoteDatabaseError) as caught:
                 server.get_asset('WEGE3')
         self.assertEqual(caught.exception.code,'SQLITE_AUTH')
-        self.assertEqual(caught.exception.stage,'0:CREATE')
+        self.assertEqual(caught.exception.stage,'0:SELECT')
         self.assertIn('leitura e escrita',str(caught.exception))
         self.assertNotIn('SECRET_TOKEN',str(caught.exception))
 
@@ -113,6 +115,46 @@ class RemoteTests(unittest.TestCase):
         for invalid in (None,{'5':result},[result]):
             with self.assertRaises(remote_sqlite.RemoteDatabaseError):
                 remote_sqlite.step_slots(invalid,2)
+
+    def test_blocked_is_policy_error_not_busy(self):
+        error=remote_sqlite.database_error({'code':'BLOCKED','message':'statement blocked'},'0:CREATE')
+        self.assertIn('política',str(error))
+        self.assertNotIn('ocupado',str(error))
+        self.assertFalse(error.schema_missing)
+        busy=remote_sqlite.database_error({'code':'SQLITE_BUSY','message':'database is locked'},'0:SELECT')
+        self.assertIn('ocupado',str(busy))
+
+    def test_existing_schema_reads_never_run_create(self):
+        server.init()
+        self.operations.clear()
+        server.get_asset('WEGE3')
+        server.get_asset('PETR4')
+        self.assertEqual(len(self.operations),2)
+        self.assertTrue(all(len(sqls)==1 and sqls[0].startswith('SELECT') for sqls in self.operations))
+
+    def test_empty_database_initializes_only_after_missing_table(self):
+        self.assertEqual(server.get_asset('WEGE3')['ticker'],'WEGE3')
+        self.assertEqual(len(self.operations),3)
+        self.assertTrue(self.operations[0][0].startswith('SELECT'))
+        self.assertTrue(any(sql.startswith('CREATE') for sql in self.operations[1]))
+        self.assertTrue(self.operations[2][0].startswith('SELECT'))
+        self.operations.clear()
+        server.get_asset('WEGE3')
+        self.assertEqual(len(self.operations),1)
+
+    def test_blocked_query_is_not_retried_or_followed_by_ddl(self):
+        batch={'step_results':[None],'step_errors':[{'code':'BLOCKED','message':'blocked reads'}]}
+        with patch.object(remote_sqlite.urllib.request,'urlopen',return_value=self.reply(batch)) as transport:
+            with self.assertRaises(remote_sqlite.RemoteDatabaseError) as caught:
+                server.get_asset('WEGE3')
+        self.assertEqual(caught.exception.code,'BLOCKED')
+        self.assertEqual(transport.call_count,1)
+
+    def test_health_probe_does_not_require_tables(self):
+        rows=server.run_sql([('SELECT 1 AS ok',())])
+        self.assertEqual(rows[0][0]['ok'],1)
+        self.assertEqual(len(self.operations),1)
+        self.assertEqual(self.db.execute("SELECT count(*) FROM sqlite_master WHERE type='table'").fetchone()[0],0)
 
 if __name__ == '__main__':
     unittest.main()

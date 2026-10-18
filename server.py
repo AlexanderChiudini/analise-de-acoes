@@ -48,10 +48,16 @@ def init():
 
 def run_sql(statements, transaction=False, ensure_schema=True):
     if remote_sqlite.configured():
-        # DDL idempotente junto da operação: funciona em qualquer instância fria.
-        all_statements = SCHEMA + statements if ensure_schema else statements
-        results = remote_sqlite.run(all_statements, transaction=transaction)
-        return results[len(SCHEMA):] if ensure_schema else results
+        # Consultas normais não executam DDL nem exigem criação de tabelas a cada chamada.
+        try:
+            return remote_sqlite.run(statements, transaction=transaction)
+        except remote_sqlite.RemoteDatabaseError as error:
+            if not ensure_schema or not getattr(error, 'schema_missing', False):
+                raise
+            # A primeira operação em um banco vazio inicializa o schema uma vez.
+            # Erros BLOCKED, de autenticação e de conexão nunca disparam esse caminho.
+            remote_sqlite.run(SCHEMA, transaction=True)
+            return remote_sqlite.run(statements, transaction=transaction)
     with connect() as db:
         if transaction:
             db.execute('BEGIN IMMEDIATE')

@@ -15,12 +15,15 @@ class RemoteDatabaseError(RuntimeError):
 def database_error(error, stage):
     error = error if isinstance(error, dict) else {}
     code = error.get('code') or 'DATABASE_ERROR'
+    normalized_code = str(code).upper()
     message = str(error.get('message', '')).lower()
-    if any(word in message for word in ('readonly', 'read-only', 'not authorized', 'permission denied')) or str(code).upper() in ('SQLITE_AUTH', 'SQLITE_READONLY'):
+    if normalized_code == 'BLOCKED':
+        explanation = 'O Turso bloqueou este comando por uma política do servidor. Verifique no painel Turso os limites de uso e os bloqueios de leitura/escrita da organização ou do banco. Tentar novamente sem resolver o bloqueio pode não funcionar.'
+    elif any(word in message for word in ('readonly', 'read-only', 'not authorized', 'permission denied')) or normalized_code in ('SQLITE_AUTH', 'SQLITE_READONLY'):
         explanation = 'O token Turso não permite inicializar ou gravar as tabelas. Configure TURSO_AUTH_TOKEN com permissão de leitura e escrita.'
     elif 'no such table' in message:
         explanation = 'O banco remoto não encontrou uma tabela necessária. Confira se a URL aponta para o banco correto e se o token permite criar as tabelas.'
-    elif 'locked' in message or 'busy' in message:
+    elif normalized_code.startswith(('SQLITE_BUSY', 'SQLITE_LOCKED')) or re.search(r'\b(locked|busy)\b', message):
         explanation = 'O banco remoto está ocupado. Tente novamente em alguns instantes.'
     elif 'autoincrement' in message:
         explanation = 'O banco remoto rejeitou AUTOINCREMENT na criação do histórico. Confira a compatibilidade SQLite/libSQL do banco configurado.'
@@ -30,6 +33,7 @@ def database_error(error, stage):
         explanation = 'O Turso recusou uma operação do banco. Consulte o código e a etapa nos logs da Vercel.'
     exc = RemoteDatabaseError(code, explanation)
     exc.stage = stage
+    exc.schema_missing = 'no such table' in message and normalized_code != 'BLOCKED'
     # Não registrar mensagens SQL, payloads ou credenciais retornados pelo provedor.
     print(f'remote_sqlite_error code={exc.code} stage={stage}', flush=True)
     return exc

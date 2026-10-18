@@ -33,7 +33,7 @@ O erro **Host inválido** ocorria porque o servidor aceitava apenas `localhost` 
    | `ALLOWED_HOSTS` | Opcional: domínio próprio ou hosts adicionais separados por vírgula |
    | `BRAPI_TOKEN` | Opcional: chave do provedor de cotações |
 
-3. Aplique as variáveis aos ambientes que usa, como **Production** e **Preview**. Publique os arquivos atualizados e faça um **novo deploy**. As tabelas serão criadas automaticamente no banco remoto.
+3. Aplique as variáveis aos ambientes que usa, como **Production** e **Preview**. Publique os arquivos atualizados e faça um **novo deploy**. Ao encontrar uma tabela ausente, o aplicativo cria o schema automaticamente e repete a operação. Consultas normais não executam `CREATE`.
 4. Confira `/api/health`: após a configuração correta, deve retornar `status: ok`, `database: sqlite` e `storage: turso`.
 
 Para gerar `SESSION_SECRET` no seu computador:
@@ -51,12 +51,18 @@ O aplicativo ainda não possui contas de usuário: visitantes com acesso ao site
 Se uma rota de ação falhar, consulte `/api/health`. Falhas de Turso agora retornam HTTP 502 com `code`, mensagem orientativa e, para erros SQL, `stage` (índice da etapa e operação, por exemplo `0:CREATE`). A resposta não contém tokens, consultas SQL nem dados retornados pelo provedor. Os logs registram o mesmo código e etapa.
 
 - `SQLITE_AUTH` ou `SQLITE_READONLY`: token sem as permissões necessárias. O app cria tabelas e índice automaticamente e precisa de leitura e escrita.
+- `BLOCKED`: comando bloqueado por política do servidor Turso. Confira no painel os limites de uso e eventuais bloqueios de leitura/escrita da organização ou do banco. Não é sinônimo de banco ocupado. Se o banco já tem as tabelas, esta versão não envia `CREATE` nas consultas. Se ainda faltam tabelas, é necessário resolver o bloqueio de escrita para inicializá-las.
+- `SQLITE_BUSY` ou `SQLITE_LOCKED`: concorrência/ocupação do banco; pode ser temporária.
 - `TURSO_HTTP_401` ou `TURSO_HTTP_403`: autenticação ou acesso negado. Confira o token do **banco**, não um token administrativo de organização.
 - `TURSO_HTTP_404`: confira a URL do banco, sem sufixos como `/v2/pipeline`.
 - `TURSO_RESPONSE_INVALID`: resposta não JSON ou incompatível com o protocolo esperado.
 - `SQLITE_ERROR` e outros códigos SQL: consulte a etapa; não significam necessariamente erro de autenticação.
 
 A antiga mensagem “Falha na operação SQLite remota; a transação foi revertida” descartava o erro real do provedor e era imprecisa para leituras. Para erros internos inesperados, a API agora retorna `error_id`; procure o mesmo identificador nos logs da Vercel e consulte o traceback associado. Não envie credenciais ao compartilhar o diagnóstico.
+
+`/api/health` executa apenas `SELECT 1`; ele verifica a conexão/leitura, sem criar tabelas nem comprovar permissão de escrita. A interpretação de `BLOCKED` segue o [protocolo oficial do Turso](https://github.com/tursodatabase/turso/blob/main/serverless/PROTOCOL.md#92-error-codes).
+
+A [documentação de uso e cobrança do Turso](https://docs.turso.tech/help/usage-and-billing) também informa `BLOCKED` ao exceder cotas de leitura, escrita ou armazenamento nos planos sujeitos a esses limites. Confira **Usage/Billing** no painel da organização; o código sozinho não identifica qual limite ou política causou o bloqueio. O aplicativo não consegue remover esse bloqueio do provedor.
 
 ## Funcionalidades
 
