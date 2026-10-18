@@ -2,6 +2,10 @@
 
 Sistema de análise quantitativa e qualitativa de ações brasileiras. Interface em português, API HTTP em Python e persistência em SQLite local ou SQLite/libSQL remoto via Turso. Não precisa de npm, pip ou serviços pagos para iniciar localmente.
 
+## Disponível em:
+
+https://analise-de-acoes-weld.vercel.app/
+
 ## Executar no Windows
 
 1. Abra **iniciar.bat** nesta pasta.
