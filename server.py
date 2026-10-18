@@ -1,0 +1,183 @@
+import csv
+import io
+import json
+import mimetypes
+import os
+import re
+import secrets
+import sqlite3
+import sys
+from datetime import datetime, timezone
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from urllib.parse import urlparse
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from models import DEFAULTS, FIELDS, validate, calculate
+from providers import collect
+
+ROOT = Path(__file__).resolve().parent
+DB = Path(os.environ.get('EQUITY_DB', str(ROOT / 'data' / 'equity.sqlite3')))
+TOKEN = secrets.token_urlsafe(32)
+PORT = int(os.environ.get('PORT', '8765'))
+
+class ClosingConnection(sqlite3.Connection):
+    def __exit__(self, *args):
+        try:
+            return super().__exit__(*args)
+        finally:
+            self.close()
+
+def connect():
+    DB.parent.mkdir(parents=True, exist_ok=True)
+    db = sqlite3.connect(DB, timeout=15, factory=ClosingConnection)
+    db.row_factory = sqlite3.Row
+    db.execute('PRAGMA journal_mode=WAL')
+    return db
+
+def init():
+    with connect() as db:
+        db.executescript('''
+        CREATE TABLE IF NOT EXISTS assets(ticker TEXT PRIMARY KEY, payload TEXT NOT NULL, updated_at TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS analyses(id INTEGER PRIMARY KEY AUTOINCREMENT, ticker TEXT NOT NULL, payload TEXT NOT NULL, created_at TEXT NOT NULL);
+        CREATE INDEX IF NOT EXISTS idx_analyses_ticker ON analyses(ticker, id DESC);
+        ''')
+
+def ticker_value(value):
+    value = value.strip().upper()
+    if not re.fullmatch(r'[A-Z]{4}[0-9]{1,2}', value):
+        raise ValueError('Ticker inválido. Exemplo: WEGE3 ou TAEE11.')
+    return value
+
+def get_asset(ticker):
+    with connect() as db:
+        row = db.execute('SELECT payload FROM assets WHERE ticker=?', (ticker,)).fetchone()
+    return json.loads(row['payload']) if row else {'ticker': ticker, 'data': dict(DEFAULTS), 'sources': {}, 'extra': {}, 'warnings': []}
+
+def save_asset(asset):
+    asset['updated_at'] = datetime.now(timezone.utc).isoformat()
+    asset['analysis'] = calculate(asset['data'])
+    payload = json.dumps(asset, ensure_ascii=False, allow_nan=False)
+    with connect() as db:
+        db.execute('INSERT INTO assets VALUES(?,?,?) ON CONFLICT(ticker) DO UPDATE SET payload=excluded.payload, updated_at=excluded.updated_at', (asset['ticker'], payload, asset['updated_at']))
+        db.execute('INSERT INTO analyses(ticker,payload,created_at) VALUES(?,?,?)', (asset['ticker'], payload, asset['updated_at']))
+    return asset
+
+class Handler(BaseHTTPRequestHandler):
+    def send(self, status, body, content='application/json; charset=utf-8'):
+        if not isinstance(body, bytes):
+            body = json.dumps(body, ensure_ascii=False, allow_nan=False).encode()
+        self.send_response(status)
+        self.send_header('Content-Type', content)
+        self.send_header('Content-Length', str(len(body)))
+        self.send_header('X-Content-Type-Options', 'nosniff')
+        self.send_header('Cache-Control', 'no-store')
+        self.send_header('Content-Security-Policy', "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_GET(self):
+        if self.headers.get('Host') not in (f'127.0.0.1:{PORT}', f'localhost:{PORT}'):
+            return self.send(403, {'error': 'Host inválido. Use o endereço local do sistema.'})
+        try:
+            self.route_get()
+        except ValueError as e:
+            self.send(400, {'error': str(e)})
+        except Exception:
+            self.send(500, {'error': 'Falha interna. Consulte o terminal.'})
+            import traceback
+            traceback.print_exc()
+
+    def route_get(self):
+        path = urlparse(self.path).path
+        if path == '/api/session':
+            return self.send(200, {'token': TOKEN})
+        if path == '/api/assets':
+            with connect() as db:
+                rows = db.execute('SELECT payload FROM assets ORDER BY updated_at DESC').fetchall()
+            return self.send(200, [json.loads(r['payload']) for r in rows])
+        match = re.fullmatch(r'/api/assets/([^/]+)(/history|/export)?', path)
+        if match:
+            ticker = ticker_value(match[1])
+            if match[2] == '/history':
+                with connect() as db:
+                    rows = db.execute('SELECT id,created_at,payload FROM analyses WHERE ticker=? ORDER BY id DESC LIMIT 100', (ticker,)).fetchall()
+                return self.send(200, [{'id': r['id'], 'created_at': r['created_at'], 'asset': json.loads(r['payload'])} for r in rows])
+            asset = get_asset(ticker)
+            asset['analysis'] = calculate(asset['data'])
+            if match[2] == '/export':
+                buf = io.StringIO()
+                writer = csv.writer(buf, delimiter=';')
+                a, d = asset['analysis'], asset['data']
+                keys = [('Ticker', ticker), ('Categoria', d.get('category')), ('Preço Atual', d.get('price')), ('DY', d.get('dy')), ('DPS', d.get('dps')), ('LPA', d.get('eps')), ('VPA', d.get('bvps')), ('Crescimento', d.get('growth')), ('IPCA', d.get('ipca')), ('Yield Desejado', d.get('desired_yield'))]
+                keys += [(label, a['values'][key]) for label, key in [('Preço Teto de Bazin', 'bazin'), ('Preço Justo de Benjamin Graham', 'graham'), ('Gordon (Meta: IPCA + 9%)', 'gordon'), ('Menor Preço Teto (O mais conservador)', 'conservative')]]
+                keys += [('Potencial de Alta / Desconto (%)', a['potential']['conservative']), ('Sinal', a['signal']), ('Média', a['values']['average']), ('Margem de Segurança', d.get('safety_margin')), ('Média com margem', a['values']['safe_average']), ('Potencial com Margem (%)', a['potential']['safe_average']), ('Sinal Definitivo', a['final_signal'])]
+                writer.writerow([x[0] for x in keys])
+                def cell(v):
+                    if isinstance(v, (int, float)):
+                        return str(round(v, 6)).replace('.', ',')
+                    s = str(v) if v is not None else ''
+                    return "'" + s if s.startswith(('=', '+', '-', '@')) else s
+                writer.writerow([cell(x[1]) for x in keys])
+                return self.send(200, ('\ufeff' + buf.getvalue()).encode('utf-8'), 'text/csv; charset=utf-8')
+            return self.send(200, asset)
+        if path == '/api/health':
+            return self.send(200, {'status': 'ok', 'database': 'sqlite'})
+        filename = {'/': 'index.html', '/app.js': 'app.js', '/style.css': 'style.css'}.get(path)
+        if filename:
+            file = ROOT / 'static' / filename
+            content = mimetypes.guess_type(filename)[0] or 'text/plain'
+            return self.send(200, file.read_bytes(), content + '; charset=utf-8')
+        self.send(404, {'error': 'Rota não encontrada.'})
+
+    def do_POST(self):
+        if self.headers.get('Host') not in (f'127.0.0.1:{PORT}', f'localhost:{PORT}'):
+            return self.send(403, {'error': 'Host inválido.'})
+        if self.headers.get('X-Session-Token') != TOKEN:
+            return self.send(403, {'error': 'Sessão inválida. Recarregue a página.'})
+        try:
+            size = int(self.headers.get('Content-Length', '0'))
+            if size < 0 or size > 100000:
+                return self.send(413, {'error': 'Conteúdo excedeu o limite.'})
+            body = json.loads(self.rfile.read(size) or '{}')
+            match = re.fullmatch(r'/api/assets/([^/]+)/(save|refresh|simulate)', urlparse(self.path).path)
+            if not match:
+                return self.send(404, {'error': 'Rota não encontrada.'})
+            ticker, action = ticker_value(match[1]), match[2]
+            asset = get_asset(ticker)
+            if action == 'refresh':
+                automatic = body.get('automatic_fields', [])
+                allowed_auto = {'price', 'dy', 'dps', 'eps', 'bvps', 'ipca'}
+                if not isinstance(automatic, list) or any(key not in allowed_auto for key in automatic):
+                    raise ValueError('Seleção de campos automáticos inválida.')
+                data, extras, sources, warnings = collect(ticker)
+                validate({key: value for key, value in data.items() if key in FIELDS})
+                if any(key not in data for key in automatic):
+                    raise ValueError('A fonte não retornou esse campo. Seu dado manual foi preservado.')
+                for key, value in data.items():
+                    if asset['sources'].get(key, {}).get('source') == 'Manual' and key not in automatic:
+                        continue
+                    asset['data'][key] = value
+                    asset['sources'][key] = sources[key]
+                asset['extra'].update(extras)
+                asset['warnings'] = warnings
+            else:
+                updates = validate(body)
+                asset['data'].update(updates)
+                if action == 'simulate':
+                    return self.send(200, {'analysis': calculate(asset['data'])})
+                for key in updates:
+                    asset['sources'][key] = {'source': 'Manual', 'fetched_at': datetime.now(timezone.utc).isoformat(), 'basis': 'Informado pelo usuário'}
+            self.send(200, save_asset(asset))
+        except (ValueError, TypeError, KeyError) as e:
+            self.send(400, {'error': str(e)})
+        except Exception:
+            import traceback
+            traceback.print_exc()
+            self.send(500, {'error': 'Falha interna. Consulte o terminal.'})
+
+if __name__ == '__main__':
+    init()
+    print(f'Equity Lab disponível em http://127.0.0.1:{PORT}', flush=True)
+    print(f'SQLite: {DB}', flush=True)
+    ThreadingHTTPServer(('127.0.0.1', PORT), Handler).serve_forever()

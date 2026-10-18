@@ -1,0 +1,6 @@
+.runtime/
+*.zip
+data/
+__pycache__/
+investidor10-sample.html
+*.log
