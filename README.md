@@ -1,6 +1,6 @@
 # Equity Lab
 
-Sistema local de análise quantitativa e qualitativa de ações brasileiras. Interface em português, API HTTP em Python e persistência real em SQLite. Não precisa de npm, pip ou serviços pagos para iniciar.
+Sistema de análise quantitativa e qualitativa de ações brasileiras. Interface em português, API HTTP em Python e persistência em SQLite local ou SQLite/libSQL remoto via Turso. Não precisa de npm, pip ou serviços pagos para iniciar localmente.
 
 ## Executar no Windows
 
@@ -10,7 +10,39 @@ Sistema local de análise quantitativa e qualitativa de ações brasileiras. Int
 
 Foi disponibilizado Python portátil 3.13.7 em `.runtime/`, baixado de python.org. O script usa esse executável; em outra máquina, use Python 3.11 ou superior e `python server.py`. Todo o código usa a biblioteca padrão. Para encerrar, pressione Ctrl+C no terminal.
 
-O banco é criado em `data/equity.sqlite3`. Cada atualização ou salvamento preserva um snapshot dos dados, fontes, premissas, cálculos, checklist e tese. Faça backup da pasta `data` com o servidor desligado. Dados são locais, não sincronizados. O servidor escuta somente em loopback; esta entrega não foi publicada na internet. O backend Python com arquivo SQLite não é compatível diretamente com o runtime Workers do Sites.
+No modo local, o banco é criado em `data/equity.sqlite3`. Cada atualização ou salvamento preserva um snapshot dos dados, fontes, premissas, cálculos, checklist e tese. Faça backup da pasta `data` com o servidor desligado. O servidor local escuta somente em loopback. Com Turso configurado, o banco passa a ser remoto, inclusive na execução local; o arquivo existente não é migrado automaticamente.
+
+## Publicar na Vercel
+
+O projeto inclui `api/index.py` e `vercel.json` para encaminhar as páginas e a API à mesma função Python. `.vercelignore` exclui o runtime Windows, banco local e fixtures do pacote publicado.
+
+O erro **Host inválido** ocorria porque o servidor aceitava apenas `localhost` e `127.0.0.1`. Agora aceita também o domínio informado na conversa, os domínios exatos fornecidos pela Vercel em `VERCEL_URL`, `VERCEL_PROJECT_PRODUCTION_URL` e `VERCEL_BRANCH_URL`, e domínios adicionais em `ALLOWED_HOSTS`. Não é aceita qualquer URL `*.vercel.app` indiscriminadamente.
+
+**A Vercel não oferece persistência de arquivos SQLite locais.** Usar `/tmp` faria as análises desaparecerem ou divergirem entre instâncias. Por isso, esta versão usa Turso (SQLite/libSQL via HTTPS) na Vercel e mantém arquivo SQLite no computador. [Limitação documentada pela Vercel](https://vercel.com/kb/guide/is-sqlite-supported-in-vercel).
+
+1. Crie um banco no [Turso](https://docs.turso.tech/quickstart) e obtenha a URL e um token do banco com permissão de leitura e escrita.
+2. Em **Vercel → projeto → Settings → Environment Variables**, cadastre:
+
+   | Variável | Valor |
+   |---|---|
+   | `TURSO_DATABASE_URL` | URL do banco, por exemplo `libsql://seu-banco-sua-organizacao.turso.io` |
+   | `TURSO_AUTH_TOKEN` | Token do banco Turso |
+   | `SESSION_SECRET` | Segredo aleatório com pelo menos 32 caracteres, igual entre as instâncias |
+   | `ALLOWED_HOSTS` | Opcional: domínio próprio ou hosts adicionais separados por vírgula |
+   | `BRAPI_TOKEN` | Opcional: chave do provedor de cotações |
+
+3. Aplique as variáveis aos ambientes que usa, como **Production** e **Preview**. Publique os arquivos atualizados e faça um **novo deploy**. As tabelas serão criadas automaticamente no banco remoto.
+4. Confira `/api/health`: após a configuração correta, deve retornar `status: ok`, `database: sqlite` e `storage: turso`.
+
+Para gerar `SESSION_SECRET` no seu computador:
+
+```powershell
+.\.runtime\python.exe -c "import secrets; print(secrets.token_urlsafe(48))"
+```
+
+Não coloque segredos no Git nem no JavaScript da interface. `.env.example` mostra apenas os nomes das variáveis; não é carregado automaticamente. O banco remoto foi testado com simulação do protocolo HTTP e SQLite real, mas não com credenciais reais de Turso neste ambiente. O deploy da sua conta Vercel não foi alterado por este trabalho.
+
+O aplicativo ainda não possui contas de usuário: visitantes com acesso ao site compartilham o mesmo banco e podem ler e editar as análises. Use o controle de acesso da hospedagem se o uso for privado. O token de sessão protege requisições; não é um login.
 
 ## Funcionalidades
 
@@ -76,13 +108,15 @@ Na linha fornecida de WEGE3, LPA de 1,49 e VPA de 4,49 produzem **Graham de R$ 1
 | POST | `/api/assets/WEGE3/save` | Salvar campos alterados |
 | POST | `/api/assets/WEGE3/simulate` | Calcular sem gravar |
 
-POST requer `X-Session-Token`, obtido em `GET /api/session`. O token muda a cada execução. Esse controle e a restrição de host protegem o uso local; não substituem autenticação de usuários numa instalação pública. `EQUITY_DB` permite outro caminho de banco e `PORT` outra porta.
+POST requer `X-Session-Token`, obtido em `GET /api/session`. O token é assinado e expira em 24 horas. Na Vercel, `SESSION_SECRET` permite validar tokens entre instâncias; localmente, sem essa variável, a chave muda ao reiniciar. Esse controle e a restrição de host não substituem autenticação de usuários. `EQUITY_DB` permite outro caminho de banco local e `PORT` outra porta.
 
 ## Verificação
 
 ```powershell
 .\.runtime\python.exe tests/test_models.py
 .\.runtime\python.exe tests/test_http.py
+# Todos os testes, incluindo Vercel/hosts, sessão e SQLite remoto simulado:
+.\.runtime\python.exe -m unittest discover -s tests -p 'test_*.py'
 # Com servidor ativo:
 .\.runtime\python.exe tests/smoke_http.py
 # Consulta real e gravação de WEGE3:

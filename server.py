@@ -4,7 +4,6 @@ import json
 import mimetypes
 import os
 import re
-import secrets
 import sqlite3
 import sys
 from datetime import datetime, timezone
@@ -15,11 +14,18 @@ from urllib.parse import urlparse
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from models import DEFAULTS, FIELDS, validate, calculate
 from providers import collect
+from hosting import ConfigurationError, allowed_host, is_vercel, session_token, valid_session
+import remote_sqlite
 
 ROOT = Path(__file__).resolve().parent
 DB = Path(os.environ.get('EQUITY_DB', str(ROOT / 'data' / 'equity.sqlite3')))
-TOKEN = secrets.token_urlsafe(32)
+TOKEN = session_token() if not is_vercel() else None
 PORT = int(os.environ.get('PORT', '8765'))
+SCHEMA = [
+    ('CREATE TABLE IF NOT EXISTS assets(ticker TEXT PRIMARY KEY, payload TEXT NOT NULL, updated_at TEXT NOT NULL)', ()),
+    ('CREATE TABLE IF NOT EXISTS analyses(id INTEGER PRIMARY KEY AUTOINCREMENT, ticker TEXT NOT NULL, payload TEXT NOT NULL, created_at TEXT NOT NULL)', ()),
+    ('CREATE INDEX IF NOT EXISTS idx_analyses_ticker ON analyses(ticker, id DESC)', ())
+]
 
 class ClosingConnection(sqlite3.Connection):
     def __exit__(self, *args):
@@ -29,6 +35,8 @@ class ClosingConnection(sqlite3.Connection):
             self.close()
 
 def connect():
+    if is_vercel():
+        raise ConfigurationError('SQLite em arquivo local não é persistente na Vercel. Configure TURSO_DATABASE_URL e TURSO_AUTH_TOKEN.')
     DB.parent.mkdir(parents=True, exist_ok=True)
     db = sqlite3.connect(DB, timeout=15, factory=ClosingConnection)
     db.row_factory = sqlite3.Row
@@ -36,12 +44,18 @@ def connect():
     return db
 
 def init():
+    run_sql(SCHEMA, transaction=True, ensure_schema=False)
+
+def run_sql(statements, transaction=False, ensure_schema=True):
+    if remote_sqlite.configured():
+        # DDL idempotente junto da operação: funciona em qualquer instância fria.
+        all_statements = SCHEMA + statements if ensure_schema else statements
+        results = remote_sqlite.run(all_statements, transaction=transaction)
+        return results[len(SCHEMA):] if ensure_schema else results
     with connect() as db:
-        db.executescript('''
-        CREATE TABLE IF NOT EXISTS assets(ticker TEXT PRIMARY KEY, payload TEXT NOT NULL, updated_at TEXT NOT NULL);
-        CREATE TABLE IF NOT EXISTS analyses(id INTEGER PRIMARY KEY AUTOINCREMENT, ticker TEXT NOT NULL, payload TEXT NOT NULL, created_at TEXT NOT NULL);
-        CREATE INDEX IF NOT EXISTS idx_analyses_ticker ON analyses(ticker, id DESC);
-        ''')
+        if transaction:
+            db.execute('BEGIN IMMEDIATE')
+        return [[dict(row) for row in db.execute(sql, args).fetchall()] for sql, args in statements]
 
 def ticker_value(value):
     value = value.strip().upper()
@@ -50,17 +64,18 @@ def ticker_value(value):
     return value
 
 def get_asset(ticker):
-    with connect() as db:
-        row = db.execute('SELECT payload FROM assets WHERE ticker=?', (ticker,)).fetchone()
+    rows = run_sql([('SELECT payload FROM assets WHERE ticker=?', (ticker,))])[0]
+    row = rows[0] if rows else None
     return json.loads(row['payload']) if row else {'ticker': ticker, 'data': dict(DEFAULTS), 'sources': {}, 'extra': {}, 'warnings': []}
 
 def save_asset(asset):
     asset['updated_at'] = datetime.now(timezone.utc).isoformat()
     asset['analysis'] = calculate(asset['data'])
     payload = json.dumps(asset, ensure_ascii=False, allow_nan=False)
-    with connect() as db:
-        db.execute('INSERT INTO assets VALUES(?,?,?) ON CONFLICT(ticker) DO UPDATE SET payload=excluded.payload, updated_at=excluded.updated_at', (asset['ticker'], payload, asset['updated_at']))
-        db.execute('INSERT INTO analyses(ticker,payload,created_at) VALUES(?,?,?)', (asset['ticker'], payload, asset['updated_at']))
+    run_sql([
+        ('INSERT INTO assets VALUES(?,?,?) ON CONFLICT(ticker) DO UPDATE SET payload=excluded.payload, updated_at=excluded.updated_at', (asset['ticker'], payload, asset['updated_at'])),
+        ('INSERT INTO analyses(ticker,payload,created_at) VALUES(?,?,?)', (asset['ticker'], payload, asset['updated_at']))
+    ], transaction=True)
     return asset
 
 class Handler(BaseHTTPRequestHandler):
@@ -77,10 +92,12 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self):
-        if self.headers.get('Host') not in (f'127.0.0.1:{PORT}', f'localhost:{PORT}'):
-            return self.send(403, {'error': 'Host inválido. Use o endereço local do sistema.'})
+        if not allowed_host(self.headers.get('Host')):
+            return self.send(403, {'error': 'Host inválido. Configure este domínio em ALLOWED_HOSTS.'})
         try:
             self.route_get()
+        except ConfigurationError as e:
+            self.send(503, {'error': str(e)})
         except ValueError as e:
             self.send(400, {'error': str(e)})
         except Exception:
@@ -91,17 +108,15 @@ class Handler(BaseHTTPRequestHandler):
     def route_get(self):
         path = urlparse(self.path).path
         if path == '/api/session':
-            return self.send(200, {'token': TOKEN})
+            return self.send(200, {'token': session_token(), 'storage': 'turso' if remote_sqlite.configured() else 'local'})
         if path == '/api/assets':
-            with connect() as db:
-                rows = db.execute('SELECT payload FROM assets ORDER BY updated_at DESC').fetchall()
+            rows = run_sql([('SELECT payload FROM assets ORDER BY updated_at DESC', ())])[0]
             return self.send(200, [json.loads(r['payload']) for r in rows])
         match = re.fullmatch(r'/api/assets/([^/]+)(/history|/export)?', path)
         if match:
             ticker = ticker_value(match[1])
             if match[2] == '/history':
-                with connect() as db:
-                    rows = db.execute('SELECT id,created_at,payload FROM analyses WHERE ticker=? ORDER BY id DESC LIMIT 100', (ticker,)).fetchall()
+                rows = run_sql([('SELECT id,created_at,payload FROM analyses WHERE ticker=? ORDER BY id DESC LIMIT 100', (ticker,))])[0]
                 return self.send(200, [{'id': r['id'], 'created_at': r['created_at'], 'asset': json.loads(r['payload'])} for r in rows])
             asset = get_asset(ticker)
             asset['analysis'] = calculate(asset['data'])
@@ -122,7 +137,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send(200, ('\ufeff' + buf.getvalue()).encode('utf-8'), 'text/csv; charset=utf-8')
             return self.send(200, asset)
         if path == '/api/health':
-            return self.send(200, {'status': 'ok', 'database': 'sqlite'})
+            run_sql([('SELECT 1', ())])
+            return self.send(200, {'status': 'ok', 'database': 'sqlite', 'storage': 'turso' if remote_sqlite.configured() else 'local'})
         filename = {'/': 'index.html', '/app.js': 'app.js', '/style.css': 'style.css'}.get(path)
         if filename:
             file = ROOT / 'static' / filename
@@ -131,11 +147,11 @@ class Handler(BaseHTTPRequestHandler):
         self.send(404, {'error': 'Rota não encontrada.'})
 
     def do_POST(self):
-        if self.headers.get('Host') not in (f'127.0.0.1:{PORT}', f'localhost:{PORT}'):
+        if not allowed_host(self.headers.get('Host')):
             return self.send(403, {'error': 'Host inválido.'})
-        if self.headers.get('X-Session-Token') != TOKEN:
-            return self.send(403, {'error': 'Sessão inválida. Recarregue a página.'})
         try:
+            if not valid_session(self.headers.get('X-Session-Token')):
+                return self.send(403, {'error': 'Sessão inválida. Recarregue a página.'})
             size = int(self.headers.get('Content-Length', '0'))
             if size < 0 or size > 100000:
                 return self.send(413, {'error': 'Conteúdo excedeu o limite.'})
@@ -169,6 +185,8 @@ class Handler(BaseHTTPRequestHandler):
                 for key in updates:
                     asset['sources'][key] = {'source': 'Manual', 'fetched_at': datetime.now(timezone.utc).isoformat(), 'basis': 'Informado pelo usuário'}
             self.send(200, save_asset(asset))
+        except ConfigurationError as e:
+            self.send(503, {'error': str(e)})
         except (ValueError, TypeError, KeyError) as e:
             self.send(400, {'error': str(e)})
         except Exception:

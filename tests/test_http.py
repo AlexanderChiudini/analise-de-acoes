@@ -33,8 +33,10 @@ class HTTPTests(unittest.TestCase):
         server.DB, server.PORT = cls.old_db, cls.old_port
         cls.temp.cleanup()
 
-    def request(self,path,body=None,authorized=True):
+    def request(self,path,body=None,authorized=True,host=None):
         headers = {'Content-Type':'application/json'}
+        if host:
+            headers['Host'] = host
         if authorized:
             headers['X-Session-Token'] = server.TOKEN
         req = urllib.request.Request(self.base+path, data=json.dumps(body).encode() if body is not None else None, headers=headers)
@@ -72,6 +74,15 @@ class HTTPTests(unittest.TestCase):
         with self.assertRaises(urllib.error.HTTPError) as error:
             self.request('/api/assets/TEST3/save',{'price':0})
         self.assertEqual(error.exception.code,400)
+
+    def test_hosted_host_serves_page_and_post(self):
+        host = 'analise-de-acoes-b3j85d53r-alex-chiudini.vercel.app'
+        self.assertIn(b'equitylab',self.request('/',host=host))
+        result = json.loads(self.request('/api/assets/TEST3/simulate',{'price':10},host=host))
+        self.assertIn('analysis',result)
+        with self.assertRaises(urllib.error.HTTPError) as error:
+            self.request('/',host='untrusted.vercel.app')
+        self.assertEqual(error.exception.code,403)
 
 if __name__ == '__main__':
     unittest.main()
