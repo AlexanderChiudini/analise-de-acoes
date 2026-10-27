@@ -9,17 +9,17 @@ const basics = [['price','Preço atual (R$)'],['dy','Dividend yield (%)'],['dps'
 const assumptions = [['category','Categoria'],['growth','Crescimento nominal (%)'],['ipca','IPCA em 12 meses (%)'],['desired_yield','Yield desejado · Bazin (%)'],['real_return','Retorno real desejado (%)'],['rate_mode','Taxa de desconto · Gordon / FCFE'],['safety_margin','Margem de segurança (%)'],['target_pe','P/L alvo'],['target_pb','P/VP alvo'],['terminal_growth','Crescimento terminal · FCFE (%)'],['dcf_years','Horizonte FCFE (anos)']];
 const labels = Object.fromEntries([...basics,...assumptions]);
 const qualityItems = [
-  ['historical_roe_above_5', 'ROE historicamente maior que 5%? (Considere anos anteriores).'],
-  ['revenue_or_profit_growth_above_5', 'Tem um crescimento de receitas (ou lucro) superior a 5% nos últimos 5 anos?'],
-  ['dividend_payment_history', 'A empresa tem um histórico de pagamento de dividendos?'],
-  ['research_and_innovation', 'A empresa investe amplamente em pesquisa e inovação? Setor obsoleto = SEMPRE NÃO.'],
-  ['founded_over_30_years', 'Tem mais de 30 anos de mercado? (Fundação).'],
-  ['national_or_world_sector_leader', 'É líder nacional ou mundial no setor em que atua? (Só considera se for LÍDER, primeira colocada).'],
-  ['sector_over_100_years', 'O setor em que a empresa atua tem mais de 100 anos?'],
-  ['blue_chip', 'A empresa é uma BLUE CHIP?'],
-  ['good_management_no_corruption', 'A empresa tem uma boa gestão? Histórico de corrupção = SEMPRE NÃO.'],
-  ['free_of_state_control_or_single_customer', 'É livre de controle ESTATAL ou concentração em cliente único?'],
-  ['net_debt_ebitda_below_2_last_5_years', 'Div. Líquida/EBITDA é menor que 2 nos últimos 5 anos?']
+  ['historical_roe_above_5', 'O retorno sobre o patrimônio (ROE) supera 5% no histórico da companhia? Avalie os anos anteriores.'],
+  ['revenue_or_profit_growth_above_5', 'Nos últimos cinco anos, a receita ou o lucro apresentou crescimento acima de 5%?'],
+  ['dividend_payment_history', 'A trajetória da companhia inclui distribuição de dividendos aos acionistas?'],
+  ['research_and_innovation', 'Há investimento expressivo em pesquisa e inovação? Se o setor estiver obsoleto, marque “Não”.'],
+  ['founded_over_30_years', 'Já se passaram mais de 30 anos desde a fundação da companhia?'],
+  ['national_or_world_sector_leader', 'A companhia ocupa o primeiro lugar em seu setor no Brasil ou no mundo? Considere apenas a liderança, não as demais posições.'],
+  ['sector_over_100_years', 'O segmento de atuação da companhia existe há mais de um século?'],
+  ['blue_chip', 'A companhia se enquadra na categoria de blue chips?'],
+  ['good_management_no_corruption', 'Você avalia a gestão da companhia como boa? Caso haja histórico de corrupção, marque “Não”.'],
+  ['free_of_state_control_or_single_customer', 'A companhia atua sem controle estatal e sem concentrar seus negócios em um único cliente?'],
+  ['net_debt_ebitda_below_2_last_5_years', 'Ao longo dos últimos cinco anos, a relação entre dívida líquida e EBITDA ficou abaixo de 2 vezes?']
 ];
 function message(text,error=false){$('message').textContent=text;$('message').className=error?'error':'';}
 async function api(path,body){const r=await fetch(path,body===undefined?{}:{method:'POST',headers:{'Content-Type':'application/json','X-Session-Token':token},body:JSON.stringify(body)});const d=await r.json();if(!r.ok)throw new Error(d.error||'Não foi possível concluir a operação.');return d;}
