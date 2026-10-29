@@ -66,7 +66,7 @@ def investidor10(ticker):
     data, extra = parse_investidor10(fetch(url))
     stamp = now()
     sources = {key: {'source': 'Investidor10', 'url': url, 'fetched_at': stamp,
-                     'basis': 'DPS 12m estimado = cotação × DY publicado; sujeito a arredondamento' if key == 'dps' else 'Valor publicado na página; conferir período contábil na fonte'} for key in data}
+                     'basis': 'DPS 12m estimado = cotação × DY publicado; sujeito a arredondamento' if key == 'dps' else 'Valor publicado na página; conferir período contábil na fonte'} for key in {**data, **extra}}
     return data, extra, sources
 
 def brapi(ticker):

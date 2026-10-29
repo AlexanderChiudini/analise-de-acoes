@@ -16,6 +16,8 @@ from models import DEFAULTS, FIELDS, validate, calculate
 from providers import collect
 from hosting import ConfigurationError, allowed_host, is_vercel, session_token, valid_session
 import remote_sqlite
+from automatic import analyze as analyze_automatic
+import discovery
 
 ROOT = Path(__file__).resolve().parent
 DB = Path(os.environ.get('EQUITY_DB', str(ROOT / 'data' / 'equity.sqlite3')))
@@ -24,8 +26,10 @@ PORT = int(os.environ.get('PORT', '8765'))
 SCHEMA = [
     ('CREATE TABLE IF NOT EXISTS assets(ticker TEXT PRIMARY KEY, payload TEXT NOT NULL, updated_at TEXT NOT NULL)', ()),
     ('CREATE TABLE IF NOT EXISTS analyses(id INTEGER PRIMARY KEY AUTOINCREMENT, ticker TEXT NOT NULL, payload TEXT NOT NULL, created_at TEXT NOT NULL)', ()),
-    ('CREATE INDEX IF NOT EXISTS idx_analyses_ticker ON analyses(ticker, id DESC)', ())
+    ('CREATE INDEX IF NOT EXISTS idx_analyses_ticker ON analyses(ticker, id DESC)', ()),
+    ('CREATE TABLE IF NOT EXISTS automatic_runs(id INTEGER PRIMARY KEY AUTOINCREMENT, payload TEXT NOT NULL, created_at TEXT NOT NULL)', ())
 ]
+SCHEMA += discovery.SCHEMA
 
 class ClosingConnection(sqlite3.Connection):
     def __exit__(self, *args):
@@ -64,8 +68,10 @@ def run_sql(statements, transaction=False, ensure_schema=True):
         return [[dict(row) for row in db.execute(sql, args).fetchall()] for sql, args in statements]
 
 def ticker_value(value):
+    if not isinstance(value, str):
+        raise ValueError('Ticker inválido. Informe o código da ação B3.')
     value = value.strip().upper()
-    if not re.fullmatch(r'[A-Z]{4}[0-9]{1,2}', value):
+    if not re.fullmatch(r'[A-Z][A-Z0-9]{3}[0-9]{1,2}', value):
         raise ValueError('Ticker inválido. Exemplo: WEGE3 ou TAEE11.')
     return value
 
@@ -135,6 +141,18 @@ class Handler(BaseHTTPRequestHandler):
 
     def route_get(self):
         path = request_path(self.path)
+        if path == '/api/automatic/discovery/latest':
+            return self.send(200, discovery.DiscoveryService(run_sql).latest())
+        match_discovery = re.fullmatch(r'/api/automatic/discovery/([a-f0-9]{32})', path)
+        if match_discovery:
+            return self.send(200, discovery.DiscoveryService(run_sql).result(match_discovery[1]))
+        if path == '/api/automatic/history':
+            rows = run_sql([('SELECT id,created_at FROM automatic_runs ORDER BY id DESC LIMIT 30', ())])[0]
+            return self.send(200, rows)
+        match_run = re.fullmatch(r'/api/automatic/history/([0-9]+)', path)
+        if match_run:
+            rows = run_sql([('SELECT payload FROM automatic_runs WHERE id=?', (int(match_run[1]),))])[0]
+            return self.send(200, json.loads(rows[0]['payload'])) if rows else self.send(404, {'error': 'Execução não encontrada.'})
         if path == '/api/session':
             return self.send(200, {'token': session_token(), 'storage': 'turso' if remote_sqlite.configured() else 'local'})
         if path == '/api/assets':
@@ -167,7 +185,7 @@ class Handler(BaseHTTPRequestHandler):
         if path == '/api/health':
             run_sql([('SELECT 1', ())])
             return self.send(200, {'status': 'ok', 'database': 'sqlite', 'storage': 'turso' if remote_sqlite.configured() else 'local'})
-        filename = {'/': 'index.html', '/app.js': 'app.js', '/style.css': 'style.css'}.get(path)
+        filename = {'/': 'index.html', '/app.js': 'app.js', '/automatic.js': 'automatic.js', '/style.css': 'style.css'}.get(path)
         if filename:
             file = ROOT / 'static' / filename
             content = mimetypes.guess_type(filename)[0] or 'text/plain'
@@ -184,6 +202,33 @@ class Handler(BaseHTTPRequestHandler):
             if size < 0 or size > 100000:
                 return self.send(413, {'error': 'Conteúdo excedeu o limite.'})
             body = json.loads(self.rfile.read(size) or '{}')
+            discovery_path = request_path(self.path)
+            service = discovery.DiscoveryService(run_sql)
+            if discovery_path == '/api/automatic/discovery/start':
+                return self.send(200, service.start(body))
+            match_discovery = re.fullmatch(r'/api/automatic/discovery/([a-f0-9]{32})/(step|finish|watch)', discovery_path)
+            if match_discovery:
+                job_id, action = match_discovery.groups()
+                if not isinstance(body, dict) or set(body) - ({'ticker'} if action == 'watch' else set()):
+                    raise ValueError('Requisição de busca inválida.')
+                if action == 'watch':
+                    ticker = ticker_value(body.get('ticker', ''))
+                    candidate = service.candidate(job_id, ticker)
+                    asset = get_asset(ticker)
+                    return self.send(200, asset if asset.get('updated_at') else save_asset(candidate))
+                return self.send(200, service.step(job_id) if action == 'step' else service.finish(job_id))
+            if request_path(self.path) == '/api/automatic/run':
+                if not isinstance(body, dict) or set(body) - {'rules'}:
+                    raise ValueError('Configuração de análise inválida.')
+                rows = run_sql([('SELECT payload FROM assets ORDER BY ticker', ())])[0]
+                if not rows:
+                    raise ValueError('Cadastre e salve pelo menos uma ação B3 na análise fundamentalista.')
+                if len(rows) > 200:
+                    raise ValueError('O limite desta versão é de 200 ações cadastradas por análise.')
+                result = analyze_automatic([json.loads(r['payload']) for r in rows], body.get('rules'))
+                run_sql([('INSERT INTO automatic_runs(payload,created_at) VALUES(?,?)',
+                          (json.dumps(result, ensure_ascii=False, allow_nan=False), result['created_at']))], transaction=True)
+                return self.send(200, result)
             match = re.fullmatch(r'/api/assets/([^/]+)/(save|refresh|simulate)', request_path(self.path))
             if not match:
                 return self.send(404, {'error': 'Rota não encontrada.'})
@@ -204,6 +249,9 @@ class Handler(BaseHTTPRequestHandler):
                     asset['data'][key] = value
                     asset['sources'][key] = sources[key]
                 asset['extra'].update(extras)
+                for key in extras:
+                    if key in sources:
+                        asset['sources'][key] = sources[key]
                 asset['warnings'] = warnings
             else:
                 updates = validate(body)
@@ -213,6 +261,8 @@ class Handler(BaseHTTPRequestHandler):
                 for key in updates:
                     asset['sources'][key] = {'source': 'Manual', 'fetched_at': datetime.now(timezone.utc).isoformat(), 'basis': 'Informado pelo usuário'}
             self.send(200, save_asset(asset))
+        except discovery.SourceUnavailable as e:
+            self.send(503, {'error': str(e)})
         except ConfigurationError as e:
             self.send(503, {'error': str(e)})
         except remote_sqlite.RemoteDatabaseError as e:
