@@ -76,6 +76,43 @@ class HTTPTests(unittest.TestCase):
             self.request('/api/assets/TEST3/save',{'price':0})
         self.assertEqual(error.exception.code,400)
 
+    def test_discovery_endpoints_and_explicit_watch_preserve_manual_inputs(self):
+        catalog = {'tickers': ['DISC3'], 'source': 'Fixture', 'url': 'https://example.com/acoes', 'fetched_at': '2026-10-28T12:00:00+00:00'}
+        candidate = {'ticker': 'DISC3', 'data': {'price': 10, 'eps': 2, 'bvps': 12, 'dy': 8, 'dps': 1}, 'extra': {'roe': 15, 'net_debt_ebitda': 2}, 'sources': {}, 'warnings': []}
+        before = len(json.loads(self.request('/api/assets')))
+        with patch.object(server.discovery, 'universe', return_value=catalog), patch.object(server.discovery, 'collect_candidate', return_value=candidate):
+            job = json.loads(self.request('/api/automatic/discovery/start', {'rules': {'min_potential': None}}))
+            path = '/api/automatic/discovery/'+job['id']
+            self.assertEqual(json.loads(self.request('/api/automatic/discovery/latest'))['id'], job['id'])
+            self.assertEqual(json.loads(self.request(path+'/step', {}))['remaining'], 0)
+            result = json.loads(self.request(path+'/finish', {}))
+        self.assertTrue(result['rows'][0]['is_new'])
+        self.assertEqual(len(json.loads(self.request('/api/assets'))), before)
+        self.assertEqual(json.loads(self.request(path+'/watch', {'ticker': 'DISC3'}))['data']['price'], 10)
+        self.request('/api/assets/DISC3/save', {'price': 99})
+        self.assertEqual(json.loads(self.request(path+'/watch', {'ticker': 'DISC3'}))['data']['price'], 99)
+        self.assertEqual(json.loads(self.request(path))['rows'][0]['price'], 10)
+        with self.assertRaises(urllib.error.HTTPError) as error:
+            self.request('/api/automatic/discovery/start', {}, authorized=False)
+        self.assertEqual(error.exception.code, 403)
+
+    def test_automatic_snapshot_history_and_authorization(self):
+        self.request('/api/assets/AUTO3/save', {'price': 10, 'eps': 2, 'bvps': 12, 'dy': 8, 'dps': 1, 'ipca': 4})
+        result = json.loads(self.request('/api/automatic/run', {'rules': {'min_roe': None, 'max_debt': None}}))
+        row = next(r for r in result['rows'] if r['ticker'] == 'AUTO3')
+        self.assertEqual(row['status'], 'passed')
+        history = json.loads(self.request('/api/automatic/history'))
+        self.assertTrue(history)
+        self.request('/api/assets/AUTO3/save', {'price': 100})
+        snapshot = json.loads(self.request('/api/automatic/history/'+str(history[0]['id'])))
+        self.assertEqual(next(r for r in snapshot['rows'] if r['ticker'] == 'AUTO3')['price'], 10)
+        for body, authorized, code in (({}, False, 403), ({'rules': {'max_pe': True}}, True, 400), ([], True, 400)):
+            with self.assertRaises(urllib.error.HTTPError) as error:
+                self.request('/api/automatic/run', body, authorized=authorized)
+            self.assertEqual(error.exception.code, code)
+        self.assertIn(b'window.Automatic', self.request('/automatic.js'))
+        self.assertEqual(json.loads(self.request('/api/index?__route=%2Fapi%2Fautomatic%2Fhistory')), history)
+
     def test_hosted_host_serves_page_and_post(self):
         host = 'analise-de-acoes-b3j85d53r-alex-chiudini.vercel.app'
         self.assertIn(b'equitylab',self.request('/',host=host))

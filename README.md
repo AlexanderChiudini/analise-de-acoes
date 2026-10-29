@@ -1,14 +1,20 @@
 # Equity Lab
 
+Agora com dois módulos: **Análise fundamentalista** (as quatro abas existentes) e **Análise automática** (ranking B3 após Histórico). Veja o [guia da análise automática](AUTOMATIC.md).
+
+A análise automática agora descobre ações no catálogo público da B3, mesmo sem cadastros anteriores. A varredura possui progresso salvo, pausa/continuação, cache de indicadores e filtro de oportunidades que atendem aos critérios. Você escolhe quais oportunidades adicionar à análise fundamentalista.
+
 Sistema de análise quantitativa e qualitativa de ações brasileiras. Interface em português, API HTTP em Python e persistência em SQLite local ou SQLite/libSQL remoto via Turso. Não precisa de npm, pip ou serviços pagos para iniciar localmente.
 
 ## Executar no Windows
 
-1. Abra **iniciar.bat** nesta pasta.
+1. Abra **iniciar.bat** nesta pasta. Ele executa o Python diretamente, sem depender do PowerShell.
 2. Mantenha o terminal aberto e acesse **http://127.0.0.1:8765**.
 3. Digite o ticker e clique em **Analisar**. Ajuste as premissas em **Dados e premissas**.
 
 Foi disponibilizado Python portátil 3.13.7 em `.runtime/`, baixado de python.org. O script usa esse executável; em outra máquina, use Python 3.11 ou superior e `python server.py`. Todo o código usa a biblioteca padrão. Para encerrar, pressione Ctrl+C no terminal.
+
+Se a página não abrir, confira a mensagem na janela do iniciador e digite o endereço acima no navegador. Não abra `static/index.html` diretamente: a interface precisa da API do servidor. Se aparecer erro de porta em uso, feche a outra instância do aplicativo e tente novamente. Para usar outra porta no PowerShell: `$env:PORT = '8766'; .\iniciar.ps1`, depois acesse `http://127.0.0.1:8766`.
 
 No modo local, o banco é criado em `data/equity.sqlite3`. Cada atualização ou salvamento preserva um snapshot dos dados, fontes, premissas, cálculos, checklist e tese. Faça backup da pasta `data` com o servidor desligado. O servidor local escuta somente em loopback. Com Turso configurado, o banco passa a ser remoto, inclusive na execução local; o arquivo existente não é migrado automaticamente.
 

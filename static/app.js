@@ -24,10 +24,37 @@ const qualityItems = [
 function message(text,error=false){$('message').textContent=text;$('message').className=error?'error':'';}
 async function api(path,body){const r=await fetch(path,body===undefined?{}:{method:'POST',headers:{'Content-Type':'application/json','X-Session-Token':token},body:JSON.stringify(body)});const d=await r.json();if(!r.ok)throw new Error(d.error||'Não foi possível concluir a operação.');return d;}
 async function task(fn){if(busy)return;busy=true;document.querySelectorAll('#search button,#refresh,.save-bar button,#manual-start').forEach(b=>b.disabled=true);try{await fn();}catch(e){message(e.message,true);}finally{busy=false;document.querySelectorAll('#search button,#refresh,.save-bar button,#manual-start').forEach(b=>b.disabled=false);}}
-function tab(name){activeTab=name;document.querySelectorAll('.tab-panel').forEach(e=>e.hidden=e.id!==name);document.querySelectorAll('[data-tab]').forEach(e=>e.classList.toggle('active',e.dataset.tab===name));if(name==='history'&&asset)loadHistory().catch(e=>message(e.message,true));}
+function tab(name){activeTab=name;updateModuleNavigation(name);const auto=name==='automatic';$('asset').hidden=auto||!asset;$('empty').hidden=auto||!!asset;$('search').hidden=auto;document.querySelector('.breadcrumb').textContent='Laboratório / '+(auto?'Análise automática':'Análise fundamentalista');document.querySelector('.page-heading h1').textContent=auto?'Um panorama das suas ações B3.':'Quanto vale uma boa empresa?';document.querySelector('.page-heading p').textContent=auto?'Ranking por critérios, com dados e justificativas para conferir.':'Transforme os fundamentos em uma análise que você pode acompanhar.';document.querySelectorAll('.tab-panel').forEach(e=>e.hidden=e.id!==name);document.querySelectorAll('[data-tab]').forEach(e=>{e.classList.toggle('active',e.dataset.tab===name);e.setAttribute('aria-pressed',String(e.dataset.tab===name));});if(auto)window.Automatic?.open();if(name==='history'&&asset)loadHistory().catch(e=>message(e.message,true));}
 document.querySelectorAll('[data-tab]').forEach(b=>b.addEventListener('click',()=>tab(b.dataset.tab)));
 function field(key,label){const v=asset.data[key],source=asset.sources[key];let input='';if(key==='category'){input=`<input name="${key}" value="${escape(v)}" placeholder="Dividendos, Growth, Valor…">`;}else if(key==='rate_mode'){input=`<select name="${key}"><option value="additive" ${v!=='compound'?'selected':''}>IPCA + retorno real (soma)</option><option value="compound" ${v==='compound'?'selected':''}>(1 + IPCA) × (1 + retorno real) − 1</option></select>`;}else{input=`<input type="number" step="${key==='dcf_years'?'1':'any'}" name="${key}" value="${escape(v??'')}" placeholder="Sem dados" ${key==='safety_margin'?'min="0" max="99.99"':''} ${key==='dcf_years'?'min="1" max="30"':''}>`;}
 return `<label>${escape(label)}${input}<small class="field-source">${escape(source?.source||(key==='ipca'||basics.some(x=>x[0]===key)?'Pendente':'Premissa inicial · editável'))}</small></label>`;}
+function setMenuOpen(group,open){group.querySelector('.nav-submenu').hidden=!open;group.querySelector('[data-nav-toggle]').setAttribute('aria-expanded',String(open));}
+function closeMenus(){document.querySelectorAll('[data-nav-group]').forEach(group=>{delete group.dataset.pinned;setMenuOpen(group,false);});}
+function openMenu(group,pinned=false){document.querySelectorAll('[data-nav-group]').forEach(other=>{if(other!==group){delete other.dataset.pinned;setMenuOpen(other,false);}});if(pinned)group.dataset.pinned='true';setMenuOpen(group,true);}
+function updateModuleNavigation(name){
+  const module=name==='automatic'?'automatic':'fundamental';
+  document.querySelectorAll('[data-shortcuts]').forEach(block=>block.hidden=block.dataset.shortcuts!==module);
+  document.querySelectorAll('[data-nav-group]').forEach(group=>{
+    const selected=group.dataset.navGroup===module;group.classList.toggle('selected',selected);
+    if(!selected){delete group.dataset.pinned;setMenuOpen(group,false);}
+  });
+}
+document.querySelectorAll('[data-nav-group]').forEach(group=>{
+  const toggle=group.querySelector('[data-nav-toggle]');
+  group.addEventListener('mouseenter',()=>{if(matchMedia('(hover: hover)').matches)openMenu(group,group.dataset.pinned==='true');});
+  group.addEventListener('mouseleave',()=>{if(!group.dataset.pinned&&!group.contains(document.activeElement))setMenuOpen(group,false);});
+  group.addEventListener('focusin',()=>openMenu(group,group.dataset.pinned==='true'));
+  group.addEventListener('focusout',()=>queueMicrotask(()=>{if(!group.dataset.pinned&&!group.contains(document.activeElement)&&!group.matches(':hover'))setMenuOpen(group,false);}));
+  toggle.addEventListener('click',()=>{
+    if(group.dataset.pinned){delete group.dataset.pinned;setMenuOpen(group,false);return;}
+    const automatic=group.dataset.navGroup==='automatic';
+    if(automatic&&activeTab!=='automatic')tab('automatic');
+    if(!automatic&&activeTab==='automatic')tab('overview');
+    openMenu(group,true);
+  });
+  group.addEventListener('keydown',event=>{if(event.key==='Escape'){event.preventDefault();toggle.focus();delete group.dataset.pinned;setMenuOpen(group,false);}});
+});
+document.addEventListener('click',event=>{if(event.target.closest('[data-tab]')||!event.target.closest('[data-nav-group]'))closeMenus();});
 function signClass(v){return v==null?'':v>=0?'positive':'negative';}
 function render(){if(!asset)return;$('empty').hidden=true;$('asset').hidden=false;const d=asset.data,a=asset.analysis,v=a.values,p=a.potential,i=a.indicators;
 $('ticker').value=asset.ticker;$('asset-ticker').textContent=asset.ticker;$('ticker-logo').textContent=asset.ticker[0];$('company-name').textContent=d.company_name||'Empresa listada na B3';$('category-pill').textContent=d.category||'Sem categoria';$('updated').textContent='Salvo em '+date(asset.updated_at);$('export').href=`/api/assets/${asset.ticker}/export`;
