@@ -18,6 +18,7 @@ from hosting import ConfigurationError, allowed_host, is_vercel, session_token, 
 import remote_sqlite
 from automatic import analyze as analyze_automatic
 import discovery
+import calculations
 
 ROOT = Path(__file__).resolve().parent
 DB = Path(os.environ.get('EQUITY_DB', str(ROOT / 'data' / 'equity.sqlite3')))
@@ -30,6 +31,10 @@ SCHEMA = [
     ('CREATE TABLE IF NOT EXISTS automatic_runs(id INTEGER PRIMARY KEY AUTOINCREMENT, payload TEXT NOT NULL, created_at TEXT NOT NULL)', ())
 ]
 SCHEMA += discovery.SCHEMA
+SCHEMA += [
+    ('CREATE TABLE IF NOT EXISTS calculation_runs(id INTEGER PRIMARY KEY AUTOINCREMENT, ticker TEXT NOT NULL, payload TEXT NOT NULL, created_at TEXT NOT NULL)', ()),
+    ('CREATE INDEX IF NOT EXISTS idx_calculation_runs ON calculation_runs(ticker,id DESC)', ())
+]
 
 class ClosingConnection(sqlite3.Connection):
     def __exit__(self, *args):
@@ -141,6 +146,14 @@ class Handler(BaseHTTPRequestHandler):
 
     def route_get(self):
         path = request_path(self.path)
+        match_calculation = re.fullmatch(r'/api/assets/([^/]+)/calculations', path)
+        if match_calculation:
+            ticker = ticker_value(match_calculation[1])
+            rows = run_sql([('SELECT payload,created_at FROM analyses WHERE ticker=? ORDER BY id DESC LIMIT 5000', (ticker,))])[0]
+            context = calculations.defaults(get_asset(ticker), [{'asset': json.loads(r['payload']), 'created_at': r['created_at']} for r in rows])
+            saved = run_sql([('SELECT id,payload,created_at FROM calculation_runs WHERE ticker=? ORDER BY id DESC LIMIT 100', (ticker,))])[0]
+            context['history'] = [{**json.loads(r['payload']), 'id': r['id'], 'created_at': r['created_at']} for r in saved]
+            return self.send(200, context)
         if path == '/api/automatic/discovery/latest':
             return self.send(200, discovery.DiscoveryService(run_sql).latest())
         match_discovery = re.fullmatch(r'/api/automatic/discovery/([a-f0-9]{32})', path)
@@ -185,7 +198,7 @@ class Handler(BaseHTTPRequestHandler):
         if path == '/api/health':
             run_sql([('SELECT 1', ())])
             return self.send(200, {'status': 'ok', 'database': 'sqlite', 'storage': 'turso' if remote_sqlite.configured() else 'local'})
-        filename = {'/': 'index.html', '/app.js': 'app.js', '/automatic.js': 'automatic.js', '/style.css': 'style.css'}.get(path)
+        filename = {'/': 'index.html', '/app.js': 'app.js', '/calculations.js': 'calculations.js', '/automatic.js': 'automatic.js', '/style.css': 'style.css'}.get(path)
         if filename:
             file = ROOT / 'static' / filename
             content = mimetypes.guess_type(filename)[0] or 'text/plain'
@@ -202,6 +215,16 @@ class Handler(BaseHTTPRequestHandler):
             if size < 0 or size > 100000:
                 return self.send(413, {'error': 'Conteúdo excedeu o limite.'})
             body = json.loads(self.rfile.read(size) or '{}')
+            match_calculation = re.fullmatch(r'/api/assets/([^/]+)/calculations/(simulate|save)', request_path(self.path))
+            if match_calculation:
+                ticker, action = ticker_value(match_calculation[1]), match_calculation[2]
+                result = calculations.run(body)
+                if action == 'save':
+                    result['created_at'] = datetime.now(timezone.utc).isoformat()
+                    result['sources'] = get_asset(ticker).get('sources', {})
+                    run_sql([('INSERT INTO calculation_runs(ticker,payload,created_at) VALUES(?,?,?)',
+                              (ticker, json.dumps(result, ensure_ascii=False, allow_nan=False), result['created_at']))], transaction=True)
+                return self.send(200, result)
             discovery_path = request_path(self.path)
             service = discovery.DiscoveryService(run_sql)
             if discovery_path == '/api/automatic/discovery/start':

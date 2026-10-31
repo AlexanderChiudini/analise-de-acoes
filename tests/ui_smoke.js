@@ -9,6 +9,26 @@
   const assert = (condition, label) => {if(!condition)throw new Error(label);};
   try {
     await waitFor(()=>!busy&&token&&asset,'inicialização');
+    const calculationModule=window.Calculations;
+    window.Calculations=undefined;
+    tab('calculations');
+    assert($('calc-form').hidden,'Não exibir formulário vazio sem módulo');
+    assert($('calc-status').textContent.includes('Reinicie o servidor'),'Orientação quando módulo não carregou');
+    window.Calculations=calculationModule;
+    tab('calculations');
+    await waitFor(()=>!$('calc-form').hidden&&$('calc-tabs').children.length===5,'cinco métodos');
+    assert($('calc-form').elements.price.value===String(asset.data.price),'Cotação preenchida pelo ticker');
+    $('calc-tabs').querySelector('[data-method="graham"]').click();
+    assert($('calc-form').elements.graham_factor.value==='15','Fator Graham inicial 15');
+    $('calc-form').elements.graham_factor.value='22.5';
+    $('calc-tabs').querySelector('[data-method="bazin"]').click();
+    assert($('calc-form').elements.graham_factor.value==='22.5','Edição preservada entre sub-abas');
+    $('calc-form').requestSubmit($('calc-form').querySelector('button[value="save"]'));
+    await waitFor(()=>$('calc-status').textContent.includes('salvo no histórico'),'salvar cálculo');
+    assert($('calc-results').querySelectorAll('tbody tr').length===5,'Comparação de cinco resultados');
+    $('calc-history').querySelector('button').click();
+    assert($('calc-detail').textContent.includes('22.5'),'Histórico preserva fator editado');
+    tab('overview');
     const shortcuts=module=>document.querySelector(`[data-shortcuts="${module}"]`);
     const group=module=>document.querySelector(`[data-nav-group="${module}"]`);
     const toggle=module=>document.querySelector(`[data-nav-toggle="${module}"]`);

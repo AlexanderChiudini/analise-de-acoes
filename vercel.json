@@ -2,7 +2,7 @@
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "functions": {
     "api/index.py": {
-      "includeFiles": "{static/**,server.py,models.py,providers.py,hosting.py,remote_sqlite.py,automatic.py,discovery.py}",
+      "includeFiles": "{static/**,server.py,models.py,calculations.py,providers.py,hosting.py,remote_sqlite.py,automatic.py,discovery.py}",
       "maxDuration": 60
     }
   },

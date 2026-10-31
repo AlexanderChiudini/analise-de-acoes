@@ -152,3 +152,10 @@ POST requer `X-Session-Token`, obtido em `GET /api/session`. O token é assinado
 Testes cobrem fórmulas, limites, dados ausentes, taxa composta, FCFE, persistência e histórico. O teste de parser real usa o HTML local opcional `investidor10-sample.html`; sem ele, esse caso é ignorado. A API e a coleta real foram verificadas. Não houve verificação visual automatizada em navegador neste ambiente.
 
 Fontes: [Investidor10](https://investidor10.com.br/acoes/wege3/), [API SIDRA do IBGE](https://apisidra.ibge.gov.br/), [SGS 13522](https://www3.bcb.gov.br/sgspub/consultarvalores/consultarValoresSeries.do?method=consultarSeries&series=13522), [documentação brapi](https://brapi.dev/docs/acoes).
+# Cálculos por cenário
+
+Na análise fundamentalista, abra **Cálculos** após selecionar um ticker. As cinco sub-abas oferecem preço-teto por P/L histórico, P/VP histórico, Bazin com yield personalizado, FCD com FCFE por ação e Graham com fator editável (inicial 15; referência clássica 22,5).
+
+Os campos começam com os dados disponíveis do ticker e podem ser editados sem alterar seus fundamentos salvos. **Calcular todos** simula; **Calcular e salvar histórico** registra as entradas, fontes e resultados no SQLite local ou Turso configurado. A tabela compara o valor estimado, teto após margem e potencial contra a cotação. O histórico aparece na própria aba, com os detalhes de cada cenário.
+
+Os múltiplos históricos são médias dos múltiplos positivos das análises salvas, limitadas às últimas 5.000 versões, com uma observação por dia de coleta UTC. São necessários dois dias válidos; a interface informa quantidade e período. Essa amostra local não substitui uma série histórica completa. Os múltiplos podem ser informados manualmente. FCFE não é estimado a partir do lucro: quando indisponível, preencha o fluxo livre ao acionista por ação. O FCD exige desconto nominal maior que crescimento terminal nominal.
