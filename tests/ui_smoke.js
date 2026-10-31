@@ -9,6 +9,18 @@
   const assert = (condition, label) => {if(!condition)throw new Error(label);};
   try {
     await waitFor(()=>!busy&&token&&asset,'inicialização');
+    const themeButton=$('theme-toggle');
+    const originalTheme=document.documentElement.dataset.theme;
+    themeButton.click();
+    const changedTheme=document.documentElement.dataset.theme;
+    assert(changedTheme!==originalTheme,'Botão alterna o tema');
+    assert(localStorage.getItem('equitylab-theme')===changedTheme,'Preferência do tema salva');
+    assert(themeButton.getAttribute('aria-pressed')===String(changedTheme==='dark'),'Estado acessível do tema');
+    tab('automatic');
+    assert(document.documentElement.dataset.theme===changedTheme&&themeButton.getClientRects().length>0,'Tema e botão disponíveis em outra aba');
+    tab('overview');
+    themeButton.click();
+    assert(document.documentElement.dataset.theme===originalTheme,'Botão restaura o tema anterior');
     const shortcuts=module=>document.querySelector(`[data-shortcuts="${module}"]`);
     const group=module=>document.querySelector(`[data-nav-group="${module}"]`);
     const toggle=module=>document.querySelector(`[data-nav-toggle="${module}"]`);

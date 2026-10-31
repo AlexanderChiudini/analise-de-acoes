@@ -1,3 +1,29 @@
+(() => {
+  const root = document.documentElement;
+  let theme = 'light';
+  try { theme = localStorage.getItem('equitylab-theme') === 'dark' ? 'dark' : 'light'; } catch {}
+  root.dataset.theme = theme;
+
+  document.addEventListener('DOMContentLoaded', () => {
+    const button = document.getElementById('theme-toggle');
+    const update = () => {
+      const dark = root.dataset.theme === 'dark';
+      const label = dark ? 'Tema claro' : 'Tema escuro';
+      button.setAttribute('aria-pressed', String(dark));
+      button.setAttribute('aria-label', 'Ativar ' + label.toLowerCase());
+      button.title = 'Ativar ' + label.toLowerCase();
+      button.querySelector('.theme-icon').textContent = dark ? '☀' : '☾';
+      button.querySelector('.theme-label').textContent = label;
+    };
+    button.addEventListener('click', () => {
+      root.dataset.theme = root.dataset.theme === 'dark' ? 'light' : 'dark';
+      try { localStorage.setItem('equitylab-theme', root.dataset.theme); } catch {}
+      update();
+    });
+    update();
+  });
+})();
+
 const $ = id => document.getElementById(id);
 const money = v => v == null ? '—' : new Intl.NumberFormat('pt-BR', {style:'currency',currency:'BRL'}).format(v);
 const number = v => v == null ? '—' : new Intl.NumberFormat('pt-BR',{maximumFractionDigits:2}).format(v);
